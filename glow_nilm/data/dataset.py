@@ -1,6 +1,8 @@
 """
 数据集加载与预处理模块
-支持 UK-DALE、REDD 等公开 NILM 数据集，也支持自定义 CSV 格式。
+======================
+支持 UK-DALE、REDD 等公开 NILM 数据集，以及自定义 CSV 格式。
+提供滑动窗口切分、MinMax 归一化和合成数据生成功能。
 """
 
 import numpy as np
@@ -11,7 +13,7 @@ from sklearn.preprocessing import MinMaxScaler
 from typing import List, Optional, Tuple
 
 
-# 各电器的功率阈值（瓦，用于弱标签判断状态是否开启）
+# 各电器的功率开启阈值（瓦），用于弱标签状态判断
 APPLIANCE_THRESHOLDS = {
     "kettle":        2000,
     "microwave":      200,
@@ -20,7 +22,7 @@ APPLIANCE_THRESHOLDS = {
     "dishwasher":      10,
 }
 
-# UK-DALE 各电器在训练/测试 house 中的通道编号（示例）
+# UK-DALE 各电器在不同 house 中的子计量通道编号（仅供参考）
 UKDALE_APPLIANCE_CHANNELS = {
     "kettle":        {1: 10, 3: 2, 5: 0},
     "microwave":     {1: 13, 5: 23},
@@ -31,17 +33,17 @@ UKDALE_APPLIANCE_CHANNELS = {
 
 
 def sliding_window(sequence: np.ndarray, window_size: int, stride: int = 1) -> np.ndarray:
-    """将一维时间序列切成滑动窗口片段。
+    """将一维时间序列切分为滑动窗口片段。
 
     Args:
         sequence:    一维 numpy 数组，shape (T,)
-        window_size: 窗口长度
+        window_size: 窗口长度（时间步数）
         stride:      滑动步长
 
     Returns:
         shape (N, window_size) 的二维数组
     """
-    assert sequence.ndim == 1, "输入必须是一维序列"
+    assert sequence.ndim == 1, "输入序列必须为一维数组"
     n_windows = (len(sequence) - window_size) // stride + 1
     indices = np.arange(window_size)[None, :] + stride * np.arange(n_windows)[:, None]
     return sequence[indices]
@@ -54,20 +56,20 @@ def load_ukdale(
     sample_rate: str = "6s",
     train_ratio: float = 0.8,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """从 UK-DALE 格式的 CSV 文件加载单个电器的功率序列。
+    """从 UK-DALE 格式的 CSV 文件加载单电器功率序列并进行归一化处理。
 
-    UK-DALE 数据格式：index 为时间戳，列为功率值（瓦）。
-    若无真实数据可用，使用 generate_synthetic_data() 替代。
+    CSV 格式要求：索引列为时间戳（timestamp），数据列为功率值（power，单位：瓦）。
+    若无真实数据，可使用 :func:`generate_synthetic_data` 替代。
 
     Args:
-        data_path:   CSV 文件路径，列名为 'power'
+        data_path:   CSV 文件路径
         appliance:   电器名称（仅用于阈值参考）
         house:       房间编号
-        sample_rate: 重采样率
+        sample_rate: 重采样频率
         train_ratio: 训练集比例
 
     Returns:
-        (train_series, test_series)，均为归一化后的 numpy 数组
+        (train_series, test_series)，均为 MinMax 归一化后的 float32 数组
     """
     df = pd.read_csv(data_path, parse_dates=["timestamp"], index_col="timestamp")
     df = df.resample(sample_rate).mean().fillna(method="ffill").fillna(0.0)
@@ -88,29 +90,30 @@ def generate_synthetic_data(
     n_samples: int = 50000,
     seed: int = 42,
 ) -> np.ndarray:
-    """生成合成电器功率序列，供无真实数据时测试使用。
+    """生成合成电器功率序列，供无真实数据时调试与快速验证使用。
 
-    模型假设：
-        - fridge:          低频持续噪声 + 周期性脉冲
-        - kettle:          稀疏高功率脉冲
-        - washing_machine: 多阶段用电（低→高→低）
-        - microwave:       短时高功率脉冲
-        - dishwasher:      长时中功率波形
-        - 默认:            高斯噪声 + 随机脉冲
+    各电器模型假设：
+
+    - **fridge**:           低频持续噪声 + 周期性开关脉冲（周期 ~600 s）
+    - **kettle**:           稀疏高功率脉冲（持续约 60–180 s）
+    - **washing_machine**:  三阶段用电（预热→洗涤→甩干）
+    - **microwave**:        短时高功率脉冲（持续约 30–180 s）
+    - **dishwasher**:       长时中功率波形（周期 ~7200 s）
+    - 其他：                高斯基础噪声 + 随机功率尖峰
     """
     rng = np.random.RandomState(seed)
     t = np.arange(n_samples, dtype=np.float32)
     power = np.zeros(n_samples, dtype=np.float32)
 
     if appliance == "fridge":
-        # 周期约 600s 的开关循环
+        # 周期约 600 s 的开关循环
         cycle = 600
         on_mask = (t % cycle) < (cycle * 0.4)
         power[on_mask] = rng.normal(loc=150, scale=20, size=on_mask.sum())
         power[~on_mask] = rng.normal(loc=2, scale=1, size=(~on_mask).sum())
 
     elif appliance == "kettle":
-        # 稀疏的 ~120s 沸水脉冲
+        # 稀疏的约 60–180 s 烧水脉冲
         pulse_starts = rng.choice(n_samples - 200, size=n_samples // 2000, replace=False)
         for s in pulse_starts:
             duration = rng.randint(60, 180)
@@ -118,7 +121,7 @@ def generate_synthetic_data(
             power[s:end] = rng.normal(loc=2500, scale=100, size=end - s)
 
     elif appliance == "washing_machine":
-        # 三阶段：预热（高）→洗涤（中）→甩干（脉冲）
+        # 三阶段：预热（高功率）→ 洗涤（中功率）→ 甩干（间歇脉冲）
         cycle_len = 3600
         n_cycles = n_samples // cycle_len
         for c in range(n_cycles):
@@ -162,14 +165,14 @@ def generate_synthetic_data(
 class ApplianceDataset(Dataset):
     """单电器功率时间序列数据集。
 
-    将连续时间序列切成固定长度窗口，每个样本形状为 (window_size,)。
-    训练时送入 Glow 模型学习该电器的功率分布。
+    将连续时间序列切分为固定长度窗口，每个样本形状为 ``(window_size,)``。
+    训练时送入 Glow 模型，学习该电器的功率分布。
 
     Args:
-        series:      一维功率序列（已归一化到 [0,1]）
+        series:      一维功率序列（已归一化至 [0, 1]）
         window_size: 每个样本的时间步数
         stride:      滑动步长
-        augment:     是否对训练样本做随机翻转增强
+        augment:     是否对训练样本执行随机时序翻转增强
     """
 
     def __init__(

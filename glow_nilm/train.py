@@ -1,15 +1,21 @@
 """
 训练脚本
 ========
-用法（示例）：
+基于负对数似然（NLL）目标，训练 Glow 归一化流模型以学习单电器功率序列的分布。
 
-    # 使用合成数据训练 kettle 模型
+用法示例
+--------
+使用合成数据快速验证流程::
+
     python train.py --appliance kettle --epochs 50 --use_synthetic
 
-    # 使用真实 CSV 数据训练
-    python train.py --appliance fridge --data_path /path/to/fridge.csv --epochs 100
+使用真实 UK-DALE CSV 数据训练::
 
-训练完成后，模型权重保存在 checkpoints/<appliance>/best_model.pt。
+    python train.py --appliance fridge \\
+        --data_path /path/to/fridge.csv \\
+        --epochs 100 --batch_size 64 --lr 1e-3
+
+训练完成后，最优模型权重保存至 ``checkpoints/<appliance>/best_model.pt``。
 """
 
 import argparse
@@ -27,29 +33,29 @@ from models.glow import Glow
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Glow NILM 训练脚本")
+    parser = argparse.ArgumentParser(description="Glow-NILM 训练脚本")
     parser.add_argument("--appliance", type=str, default="kettle",
-                        help="电器名称（kettle/fridge/microwave/washing_machine/dishwasher）")
+                        help="目标电器名称（kettle / fridge / microwave / washing_machine / dishwasher）")
     parser.add_argument("--data_path", type=str, default=None,
-                        help="真实数据 CSV 路径（含 timestamp, power 列）")
+                        help="真实数据 CSV 文件路径（需含 timestamp、power 两列）")
     parser.add_argument("--use_synthetic", action="store_true",
-                        help="使用合成数据替代真实数据（调试用）")
+                        help="使用合成数据替代真实数据（用于调试与快速验证）")
     parser.add_argument("--window_size", type=int, default=128,
-                        help="滑动窗口长度")
+                        help="滑动窗口长度（时间步数）")
     parser.add_argument("--stride", type=int, default=32,
-                        help="滑动步长")
+                        help="滑动窗口步长")
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--num_steps", type=int, default=8,
-                        help="每个尺度的 Glow 步骤数")
+                        help="每个尺度包含的 Glow 步骤数（K）")
     parser.add_argument("--num_scales", type=int, default=1,
                         help="多尺度层数")
     parser.add_argument("--hidden_channels", type=int, default=64)
     parser.add_argument("--n_coupling_blocks", type=int, default=2)
     parser.add_argument("--squeeze_factor", type=int, default=2)
     parser.add_argument("--device", type=str, default="auto",
-                        help="cpu / cuda / auto")
+                        help="计算设备：cpu / cuda / auto（自动检测）")
     parser.add_argument("--save_dir", type=str, default="checkpoints")
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
@@ -69,14 +75,14 @@ def get_device(device_str: str) -> torch.device:
 
 
 def build_dataloaders(args):
-    """构建训练/验证 DataLoader。"""
+    """构建训练集与验证集的 DataLoader。"""
     if args.use_synthetic or args.data_path is None:
-        print(f"[数据] 使用合成数据（电器：{args.appliance}）")
+        print(f"[数据]  使用合成数据（电器：{args.appliance}）")
         series = generate_synthetic_data(appliance=args.appliance, seed=args.seed)
         split = int(len(series) * 0.8)
         train_series, val_series = series[:split], series[split:]
     else:
-        print(f"[数据] 从 {args.data_path} 加载真实数据")
+        print(f"[数据]  从 {args.data_path} 加载真实数据")
         train_series, val_series = load_ukdale(
             args.data_path, appliance=args.appliance
         )
@@ -92,7 +98,7 @@ def build_dataloaders(args):
         val_ds, batch_size=args.batch_size, shuffle=False,
         num_workers=2, pin_memory=True
     )
-    print(f"[数据] 训练样本数: {len(train_ds)}, 验证样本数: {len(val_ds)}")
+    print(f"[数据]  训练样本：{len(train_ds):,}  |  验证样本：{len(val_ds):,}")
     return train_loader, val_loader
 
 
@@ -106,7 +112,7 @@ def build_model(args) -> Glow:
         squeeze_factor=args.squeeze_factor,
     )
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"[模型] 可训练参数量: {n_params:,}")
+    print(f"[模型]  可训练参数量：{n_params:,}")
     return model
 
 
@@ -116,8 +122,7 @@ def train_one_epoch(model, loader, optimizer, device, epoch):
     for batch in loader:
         x = batch.to(device)           # (B, window_size)
         x = x.unsqueeze(1)             # (B, 1, window_size)
-        # 加少量抖动防止过拟合精确值
-        x = x + torch.randn_like(x) * 1e-3
+        x = x + torch.randn_like(x) * 1e-3  # 添加微小抖动以防止对精确值过拟合
         optimizer.zero_grad()
         loss = model.nll_loss(x)
         loss.backward()
@@ -142,7 +147,7 @@ def main():
     args = parse_args()
     set_seed(args.seed)
     device = get_device(args.device)
-    print(f"[设备] 使用: {device}")
+    print(f"[设备]  使用：{device}")
 
     train_loader, val_loader = build_dataloaders(args)
     model = build_model(args).to(device)
@@ -162,12 +167,12 @@ def main():
         elapsed = time.time() - t0
 
         print(
-            f"Epoch [{epoch:>3}/{args.epochs}] "
-            f"Train NLL: {train_loss:.4f} | Val NLL: {val_loss:.4f} | "
-            f"Time: {elapsed:.1f}s"
+            f"Epoch [{epoch:>3}/{args.epochs}]  "
+            f"Train NLL: {train_loss:.4f}  |  Val NLL: {val_loss:.4f}  |  "
+            f"Elapsed: {elapsed:.1f}s"
         )
 
-        # 保存最优模型
+        # 保存验证损失最优的模型检查点
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             ckpt = {
@@ -178,10 +183,10 @@ def main():
                 "args": vars(args),
             }
             torch.save(ckpt, save_path / "best_model.pt")
-            print(f"  ✓ 保存最优模型 (val_loss={val_loss:.4f})")
+            print(f"  ✓  检查点已保存（val_loss={val_loss:.4f}）")
 
-    print(f"\n训练完成！最优验证损失: {best_val_loss:.4f}")
-    print(f"模型已保存至: {save_path / 'best_model.pt'}")
+    print(f"\n训练完成。最优验证损失：{best_val_loss:.4f}")
+    print(f"模型已保存至：{save_path / 'best_model.pt'}")
 
 
 if __name__ == "__main__":

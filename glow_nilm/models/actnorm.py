@@ -1,15 +1,17 @@
 """
 ActNorm（激活归一化层）
 =======================
-对每个通道独立进行仿射变换，参数在第一批数据时通过数据驱动的方式初始化（
-使得输出近似均值为 0、方差为 1），之后作为可训练参数更新。
+对每个通道独立执行仿射变换。参数在首个 mini-batch 时以数据驱动方式初始化
+（使输出近似均值为 0、方差为 1），此后作为可训练参数持续更新。
 
-前向（归一化方向）:
-    y = (x - bias) / exp(logs)
-    log|det J| = -sum(logs) * pixels
+前向（归一化方向）::
 
-逆向（生成方向）:
-    x = y * exp(logs) + bias
+    y = (x + bias) × exp(logs)
+    log|det J| = sum(logs) × L
+
+逆向（生成方向）::
+
+    x = y × exp(−logs) − bias
 """
 
 import torch
@@ -17,11 +19,11 @@ import torch.nn as nn
 
 
 class ActNorm1d(nn.Module):
-    """1D 序列的 ActNorm。
+    """1D 序列的激活归一化层。
 
     Args:
-        num_channels: 特征/通道数
-        eps:          数值稳定项
+        num_channels: 通道数（特征维度）
+        eps:          数值稳定项，防止除零
     """
 
     def __init__(self, num_channels: int, eps: float = 1e-6):
@@ -34,7 +36,7 @@ class ActNorm1d(nn.Module):
         self.initialized = False
 
     def _initialize(self, x: torch.Tensor):
-        """用第一个 mini-batch 做数据驱动初始化。x: (B, C, L)"""
+        """使用首个 mini-batch 进行数据驱动初始化。x: (B, C, L)"""
         with torch.no_grad():
             # 在 batch 和 length 维度上统计
             mean = x.mean(dim=[0, 2], keepdim=True)          # (1, C, 1)

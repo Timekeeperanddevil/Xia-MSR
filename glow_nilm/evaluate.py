@@ -1,15 +1,22 @@
 """
 评估脚本
 ========
-对已训练的 Glow 模型进行全面评估：
-    1. 编码质量：验证潜变量 z 是否近似服从标准正态分布（Shapiro-Wilk / QQ 图）
-    2. 生成质量：Wasserstein 距离、KL 散度、均值/方差比较
-    3. 多电器比较：在所有已训练的电器模型上输出评估表格
+对已训练的 Glow-NILM 模型进行全面定量评估：
 
-用法：
+1. **潜变量正态性**：验证编码后的潜变量 z 是否近似服从标准正态分布
+   （Shapiro-Wilk 检验 + QQ 图）。
+2. **生成质量**：计算 Wasserstein 距离、KL 散度、均值/方差偏差及自相关 MAE。
+3. **多电器汇总**：在所有已训练电器上批量运行并输出对比表格。
 
+用法
+----
+::
+
+    # 评估单个电器
     python evaluate.py --appliance kettle
-    python evaluate.py --all        # 评估 checkpoints/ 下所有电器
+
+    # 批量评估 checkpoints/ 目录下所有已训练电器
+    python evaluate.py --all
 """
 
 import argparse
@@ -26,9 +33,9 @@ from utils.metrics import compute_statistics, compute_mae, compute_rmse
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Glow NILM 评估脚本")
+    parser = argparse.ArgumentParser(description="Glow-NILM 模型评估脚本")
     parser.add_argument("--appliance", type=str, default="kettle")
-    parser.add_argument("--all", action="store_true", help="评估所有已训练电器")
+    parser.add_argument("--all", action="store_true", help="批量评估所有已训练电器")
     parser.add_argument("--ckpt_dir", type=str, default="checkpoints")
     parser.add_argument("--n_samples", type=int, default=500)
     parser.add_argument("--window_size", type=int, default=128)
@@ -63,22 +70,22 @@ def evaluate_latent_normality(model, real_series, window_size, device, save_dir)
         z, _ = model.encode(x)
     z_np = z.cpu().numpy().flatten()
 
-    # Shapiro-Wilk 检验（取子样本，因 n<5000）
+    # Shapiro-Wilk 检验（样本量建议不超过 500）
     sub = np.random.choice(z_np, size=min(5000, len(z_np)), replace=False)
-    stat, p_val = shapiro(sub[:500])  # shapiro 最大支持 5000，但建议 ≤500
+    stat, p_val = shapiro(sub[:500])
 
-    print(f"\n[潜变量正态性检验] Shapiro-Wilk W={stat:.4f}, p={p_val:.4f}")
-    print(f"  均值: {z_np.mean():.4f}, 标准差: {z_np.std():.4f}")
+    print(f"\n[潜变量正态性]  Shapiro-Wilk  W={stat:.4f},  p={p_val:.4f}")
+    print(f"  均值：{z_np.mean():.4f}    标准差：{z_np.std():.4f}")
 
     # QQ 图
     fig, ax = plt.subplots(figsize=(5, 5))
     probplot(sub, dist="norm", plot=ax)
-    ax.set_title("潜变量 z — QQ 图（vs 标准正态）")
+    ax.set_title("潜变量 z — Q-Q 图（对照标准正态）")
     plt.tight_layout()
     save_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(save_dir / "latent_qq_plot.png", dpi=120)
     plt.close()
-    print(f"  QQ 图已保存至 {save_dir / 'latent_qq_plot.png'}")
+    print(f"  Q-Q 图已保存至：{save_dir / 'latent_qq_plot.png'}")
     return {"shapiro_W": float(stat), "shapiro_p": float(p_val)}
 
 
@@ -96,11 +103,11 @@ def evaluate_generation(model, real_series, window_size, n_samples, temperature,
 
     stats = compute_statistics(samples_np, real_windows)
     print(f"\n[生成质量评估]")
-    print(f"  Wasserstein 距离: {stats['wasserstein']:.6f}")
-    print(f"  KL 散度:          {stats['kl_div']:.6f}")
-    print(f"  均值差异:         |{stats['mean_real']:.4f} - {stats['mean_gen']:.4f}| = "
+    print(f"  Wasserstein 距离：{stats['wasserstein']:.6f}")
+    print(f"  KL 散度：         {stats['kl_div']:.6f}")
+    print(f"  均值偏差：        |{stats['mean_real']:.4f} - {stats['mean_gen']:.4f}| = "
           f"{abs(stats['mean_real'] - stats['mean_gen']):.4f}")
-    print(f"  标准差差异:       |{stats['std_real']:.4f} - {stats['std_gen']:.4f}| = "
+    print(f"  标准差偏差：      |{stats['std_real']:.4f} - {stats['std_gen']:.4f}| = "
           f"{abs(stats['std_real'] - stats['std_gen']):.4f}")
 
     # 自相关对比
@@ -120,9 +127,9 @@ def evaluate_generation(model, real_series, window_size, n_samples, temperature,
     acf_gen  = mean_autocorr(samples_np)
     acf_mae  = compute_mae(acf_real, acf_gen)
 
-    print(f"  自相关曲线 MAE:   {acf_mae:.6f}")
+    print(f"  自相关曲线 MAE：  {acf_mae:.6f}")
 
-    # 分布 + 自相关可视化
+    # 分布与自相关可视化
     save_dir.mkdir(parents=True, exist_ok=True)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
     ax1.hist(real_windows.flatten(), bins=60, density=True, alpha=0.6, label="真实数据", color="steelblue")
@@ -131,12 +138,12 @@ def evaluate_generation(model, real_series, window_size, n_samples, temperature,
 
     ax2.plot(acf_real, label="真实数据", color="steelblue")
     ax2.plot(acf_gen,  label="Glow 生成", color="tomato", linestyle="--")
-    ax2.set_xlabel("延迟（lag）"); ax2.set_ylabel("自相关"); ax2.legend(); ax2.set_title("平均自相关对比")
+    ax2.set_xlabel("延迟（lag）"); ax2.set_ylabel("自相关系数"); ax2.legend(); ax2.set_title("平均自相关对比")
 
     plt.tight_layout()
     fig.savefig(save_dir / "eval_comparison.png", dpi=120)
     plt.close()
-    print(f"  评估图已保存至 {save_dir / 'eval_comparison.png'}")
+    print(f"  评估对比图已保存至：{save_dir / 'eval_comparison.png'}")
 
     stats["acf_mae"] = acf_mae
     return stats
@@ -145,7 +152,7 @@ def evaluate_generation(model, real_series, window_size, n_samples, temperature,
 def evaluate_appliance(appliance, args, device):
     ckpt_path = Path(args.ckpt_dir) / appliance / "best_model.pt"
     if not ckpt_path.exists():
-        print(f"[跳过] {appliance}：未找到模型权重 {ckpt_path}")
+        print(f"[跳过]  {appliance}：未找到模型权重 {ckpt_path}")
         return None
 
     save_dir = Path(args.save_dir) / appliance
@@ -175,26 +182,26 @@ def main():
     if args.all:
         appliances = [d.name for d in Path(args.ckpt_dir).iterdir() if d.is_dir()]
         if not appliances:
-            print(f"[错误] {args.ckpt_dir} 下未找到任何已训练的模型。")
+            print(f"[错误]  {args.ckpt_dir} 目录下未发现任何已训练的模型。")
             return
-        print(f"[评估] 发现 {len(appliances)} 个电器：{appliances}")
+        print(f"[评估]  发现 {len(appliances)} 个已训练电器：{appliances}")
         results = {}
         for ap in appliances:
             r = evaluate_appliance(ap, args, device)
             if r:
                 results[ap] = r
 
-        # 打印汇总表格
-        print(f"\n{'='*70}")
-        print(f"{'电器':<20} {'Wasserstein':>14} {'KL散度':>12} {'ACF-MAE':>12} {'Shapiro-W':>12}")
-        print('-'*70)
+        # 输出汇总表格
+        print(f"\n{'='*72}")
+        print(f"{'电器':<20} {'Wasserstein':>14} {'KL 散度':>12} {'ACF-MAE':>12} {'Shapiro-W':>12}")
+        print('-'*72)
         for ap, r in results.items():
             print(f"{ap:<20} {r['wasserstein']:>14.6f} {r['kl_div']:>12.6f} "
                   f"{r['acf_mae']:>12.6f} {r['shapiro_W']:>12.4f}")
     else:
         evaluate_appliance(args.appliance, args, device)
 
-    print("\n评估完成！")
+    print("\n评估完成。")
 
 
 if __name__ == "__main__":

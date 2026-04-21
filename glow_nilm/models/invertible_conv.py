@@ -1,14 +1,19 @@
 """
 可逆 1×1 卷积（Invertible 1×1 Convolution）
 ===========================================
-原始 Glow 论文中对图像空间维度做通道混合；此处对 1D 序列在通道维度做
-可逆线性变换，等价于将通道之间的顺序/混合做可学习的排列。
+对 1D 序列在通道维度执行可逆线性变换，实现可学习的通道混合与排列，
+等价于 Glow 论文中对图像空间维度的通道混合操作。
 
-前向:   y = W @ x，  log|det J| = L * log|det W|
-逆向:   x = W⁻¹ @ y
+前向::
 
-为保证数值稳定性，使用 LU 分解参数化 W = P L U，其中 P 为固定置换矩阵，
-L 为下三角矩阵（对角元固定为 1），U 为上三角矩阵。
+    y = W @ x,      log|det J| = L × log|det W|
+
+逆向::
+
+    x = W⁻¹ @ y
+
+为保证数值稳定性，采用 LU 分解参数化权重矩阵：W = P L U，
+其中 P 为固定置换矩阵，L 为对角元固定为 1 的下三角矩阵，U 为上三角矩阵。
 """
 
 import numpy as np
@@ -22,7 +27,7 @@ class Invertible1x1Conv(nn.Module):
 
     Args:
         num_channels: 通道数
-        lu_decompose: 若 True 使用 LU 参数化（节省存储、加速求逆）
+        lu_decompose: 若为 True，使用 LU 分解参数化（节省存储并加速矩阵求逆）
     """
 
     def __init__(self, num_channels: int, lu_decompose: bool = True):
@@ -30,17 +35,17 @@ class Invertible1x1Conv(nn.Module):
         self.num_channels = num_channels
         self.lu_decompose = lu_decompose
 
-        # 用随机正交矩阵初始化
+        # 以随机正交矩阵初始化权重
         W_init = np.linalg.qr(np.random.randn(num_channels, num_channels))[0]
         W_init = W_init.astype(np.float32)
 
         if lu_decompose:
-            # P, L, U 分解
+            # P、L、U 三角分解
             P, L, U = self._plu(W_init)
             self.register_buffer("P", torch.from_numpy(P))
             self.L_raw   = nn.Parameter(torch.from_numpy(L))
             self.U_raw   = nn.Parameter(torch.from_numpy(U))
-            # 上三角对角元的符号固定（保证 det 符号不变）
+            # 固定上三角对角元的符号，保证行列式符号不变
             s = np.diag(U)
             sign_s = np.sign(s)
             sign_s[sign_s == 0] = 1.0
@@ -57,12 +62,12 @@ class Invertible1x1Conv(nn.Module):
         return P.astype(np.float32), L.astype(np.float32), U.astype(np.float32)
 
     def _get_W(self, inverse: bool = False):
-        """构造权重矩阵并返回其逆（若 inverse=True）。"""
+        """构造权重矩阵；若 inverse=True 则返回其逆矩阵。"""
         if self.lu_decompose:
             C = self.num_channels
-            # 下三角：对角置为 1
+            # 下三角矩阵：强制对角元为 1
             L = torch.tril(self.L_raw, diagonal=-1) + torch.eye(C, device=self.L_raw.device)
-            # 上三角：用 log|s| + sign_s 重建对角
+            # 上三角矩阵：以 log|s| + sign_s 重建对角
             U_diag = self.sign_s * torch.exp(self.log_s)
             U = torch.triu(self.U_raw, diagonal=1) + torch.diag(U_diag)
             W = self.P @ L @ U

@@ -1,11 +1,14 @@
 """
 评估指标工具函数
 ================
-常用的 NILM 误差指标：
-    - MAE  均绝对误差
-    - RMSE 均方根误差
-    - SAE  信号总量误差
-    - MRE  平均相对误差
+常用 NILM 误差指标及分布相似度度量：
+
+- **MAE**  均绝对误差（Mean Absolute Error）
+- **RMSE** 均方根误差（Root Mean Square Error）
+- **SAE**  信号总量误差（Signal Aggregate Error）
+- **MRE**  平均相对误差（Mean Relative Error）
+- **Wasserstein** Wasserstein-1 距离
+- **KL 散度**  直方图近似 KL 散度
 """
 
 import numpy as np
@@ -24,7 +27,9 @@ def compute_rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 def compute_sae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     """信号总量误差（Signal Aggregate Error）。
 
-    SAE = |sum(y_pred) - sum(y_true)| / sum(y_true)
+    .. code-block:: text
+
+        SAE = |sum(y_pred) − sum(y_true)| / sum(y_true)
     """
     total_true = np.sum(y_true)
     if total_true == 0:
@@ -38,14 +43,14 @@ def compute_mre(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-8) -> fl
 
 
 def compute_statistics(samples: np.ndarray, real: np.ndarray) -> dict:
-    """比较生成样本与真实数据的统计特性。
+    """比较生成样本与真实数据的统计特性，返回多维度分布相似度指标。
 
     Args:
-        samples: (N, L) 生成样本
-        real:    (M, L) 真实窗口
+        samples: (N, L)，生成样本窗口
+        real:    (M, L)，真实数据窗口
 
     Returns:
-        包含均值、标准差、峰度、分布误差等的字典
+        包含均值、标准差、峰度、Wasserstein 距离、KL 散度等的字典
     """
     from scipy.stats import kurtosis, wasserstein_distance
 
@@ -61,7 +66,7 @@ def compute_statistics(samples: np.ndarray, real: np.ndarray) -> dict:
     stats["kurt_gen"]     = float(kurtosis(s_flat))
     stats["wasserstein"]  = float(wasserstein_distance(r_flat, s_flat))
 
-    # 直方图 KL 散度（离散近似）
+    # 直方图近似 KL 散度（离散化近似）
     bins = 50
     p, edges = np.histogram(r_flat, bins=bins, density=True)
     q, _     = np.histogram(s_flat, bins=edges, density=True)

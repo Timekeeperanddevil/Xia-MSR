@@ -1,18 +1,24 @@
 """
 仿射耦合层（Affine Coupling Layer）
 =====================================
-将通道对半切分：
+将通道对半切分后执行仿射变换：
+
+.. code-block:: text
+
     x1, x2 = split(x)
-    s, t = NN(x1)
-    y1 = x1
-    y2 = x2 * exp(s) + t
+    s, t   = NN(x1)
+    y1     = x1
+    y2     = x2 × exp(s) + t
     log|det J| = sum(s)
 
-逆变换:
+逆变换：
+
+.. code-block:: text
+
     y1, y2 = split(y)
-    s, t = NN(y1)
-    x1 = y1
-    x2 = (y2 - t) * exp(-s)
+    s, t   = NN(y1)
+    x1     = y1
+    x2     = (y2 − t) × exp(−s)
 """
 
 import torch
@@ -21,7 +27,7 @@ import torch.nn.functional as F
 
 
 class ResBlock1d(nn.Module):
-    """带残差连接的 1D 卷积块（用于耦合网络）。"""
+    """带残差连接的 1D 卷积块（用于耦合网络的特征提取）。"""
 
     def __init__(self, channels: int, kernel_size: int = 3):
         super().__init__()
@@ -40,13 +46,13 @@ class ResBlock1d(nn.Module):
 
 
 class CouplingNetwork(nn.Module):
-    """耦合层中的 s/t 预测网络（1D 卷积 + 残差块）。
+    """耦合层中用于预测缩放因子 s 和平移量 t 的网络（1D 卷积 + 残差块）。
 
     Args:
-        in_channels:  输入通道数（= num_channels // 2）
-        out_channels: 输出通道数（= num_channels，表示 s 和 t 各一半）
-        hidden_channels: 隐藏通道数
-        n_blocks:     残差块数量
+        in_channels:     输入通道数（= num_channels // 2）
+        out_channels:    输出通道数（= num_channels，s 和 t 各占一半）
+        hidden_channels: 隐藏层通道数
+        n_blocks:        残差块数量
     """
 
     def __init__(
@@ -62,9 +68,8 @@ class CouplingNetwork(nn.Module):
             *[ResBlock1d(hidden_channels) for _ in range(n_blocks)]
         )
         self.output_conv = nn.Conv1d(hidden_channels, out_channels, 3, padding=1)
-        # 初始化输出层权重为 0，使初始变换接近恒等
         nn.init.zeros_(self.output_conv.weight)
-        nn.init.zeros_(self.output_conv.bias)
+        nn.init.zeros_(self.output_conv.bias)  # 初始输出为零，使初始变换接近恒等映射
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = F.gelu(self.input_conv(x))
@@ -79,7 +84,7 @@ class AffineCouplingLayer(nn.Module):
         num_channels:    总通道数（必须为偶数）
         hidden_channels: 耦合网络隐藏层通道数
         n_blocks:        耦合网络残差块数量
-        scale_bound:     限制 s 的范围以防数值爆炸
+        scale_bound:     对缩放因子 s 的范围约束，防止数值爆炸
     """
 
     def __init__(
